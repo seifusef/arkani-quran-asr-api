@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --no-cache-dir \
     runpod \
     huggingface_hub \
-    nemo_toolkit[asr] \
+    "nemo_toolkit[asr]" \
     soundfile
 
 COPY handler.py .
