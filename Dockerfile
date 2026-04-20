@@ -1,19 +1,20 @@
-# ─── Arkani Quran ASR - RunPod Serverless ───
-# Base: NVIDIA NeMo container (has PyTorch + NeMo pre-installed)
-FROM nvcr.io/nvidia/nemo:24.01.01
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
 
 WORKDIR /app
 
-# Install RunPod SDK + HuggingFace Hub
-COPY requirements.txt .
-RUN pip install --no-cache-dir runpod huggingface_hub
+RUN apt-get update && apt-get install -y \
+    ffmpeg sox libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy handler
+RUN pip install --no-cache-dir \
+    runpod \
+    huggingface_hub \
+    nemo_toolkit[asr] \
+    soundfile
+
 COPY handler.py .
 
-# Environment variables (override in RunPod dashboard)
 ENV HF_REPO_ID="seifelshaer/arkani-quran-asr"
 ENV HF_FILENAME="arkani_quran_model.nemo"
 
-# Start handler
-CMD ["python", "handler.py"]
+CMD ["python", "-u", "handler.py"]
