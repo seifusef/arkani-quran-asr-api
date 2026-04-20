@@ -1,0 +1,7 @@
+runpod
+huggingface_hub
+torch
+torchaudio
+nemo_toolkit[asr]
+Cython
+packaging
