@@ -1,23 +1,6 @@
 """
 RunPod Serverless Handler for Arkani Quran ASR (NeMo FastConformer)
-Loads the fine-tuned NeMo model and transcribes audio sent as base64.
 """
-# ─── Fix torchaudio compatibility (not needed for ASR inference) ───
-import sys, types
-
-class _MockModule(types.ModuleType):
-    """Auto-creates sub-modules on access to prevent ImportErrors."""
-    def __getattr__(self, name):
-        mod = _MockModule(f'{self.__name__}.{name}')
-        sys.modules[mod.__name__] = mod
-        return mod
-
-# Pre-register torchaudio mock before any NeMo import
-_ta = _MockModule('torchaudio')
-_ta.__version__ = '0.0.0'
-sys.modules['torchaudio'] = _ta
-# ─── End Fix ──────────────────────────────────────────────────────
-
 import runpod
 import base64
 import tempfile
@@ -26,7 +9,6 @@ import torch
 import nemo.collections.asr as nemo_asr
 from huggingface_hub import hf_hub_download
 
-
 # ─── Configuration ────────────────────────────────────────────
 HF_REPO_ID = os.environ.get("HF_REPO_ID", "seifelshaer/arkani-quran-asr")
 HF_FILENAME = os.environ.get("HF_FILENAME", "arkani_quran_full.nemo")
@@ -34,9 +16,7 @@ MODEL_CACHE = "/app/model_cache"
 
 # ─── Load Model (runs once at cold start) ─────────────────────
 def load_model():
-    """Download model from Hugging Face and load it."""
     os.makedirs(MODEL_CACHE, exist_ok=True)
-    
     local_path = os.path.join(MODEL_CACHE, HF_FILENAME)
     
     if not os.path.exists(local_path):
@@ -47,9 +27,6 @@ def load_model():
             cache_dir=MODEL_CACHE,
             local_dir=MODEL_CACHE,
         )
-        print(f"Model downloaded to: {local_path}")
-    else:
-        print(f"Model already cached at: {local_path}")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading NeMo model on {device}...")
@@ -65,9 +42,6 @@ def load_model():
     print("Model loaded successfully!")
     return model
 
-print("=" * 50)
-print("Arkani Quran ASR - Starting up...")
-print("=" * 50)
 MODEL = load_model()
 
 # ─── Handler Function ─────────────────────────────────────────
@@ -102,7 +76,6 @@ def handler(event):
                 "text": text.strip(),
                 "status": "success"
             }
-            
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
