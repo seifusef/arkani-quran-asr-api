@@ -4,8 +4,10 @@ FROM nvcr.io/nvidia/nemo:24.01.01
 
 WORKDIR /app
 
+# Remove broken torchaudio to prevent crash
+RUN pip uninstall -y torchaudio
+
 # Install RunPod SDK + HuggingFace Hub
-COPY requirements.txt .
 RUN pip install --no-cache-dir runpod huggingface_hub
 
 # Copy handler
