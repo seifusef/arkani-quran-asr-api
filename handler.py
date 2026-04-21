@@ -2,6 +2,13 @@
 RunPod Serverless Handler for Arkani Quran ASR (NeMo FastConformer)
 Loads the fine-tuned NeMo model and transcribes audio sent as base64.
 """
+# Fix torchaudio compatibility (not needed for inference)
+import sys, types
+_ta = types.ModuleType('torchaudio')
+_ta.__version__ = '0.0.0'
+sys.modules['torchaudio'] = _ta
+sys.modules['torchaudio._extension'] = types.ModuleType('torchaudio._extension')
+
 import runpod
 import base64
 import tempfile
@@ -11,9 +18,8 @@ import nemo.collections.asr as nemo_asr
 from huggingface_hub import hf_hub_download
 
 # ─── Configuration ────────────────────────────────────────────
-# Change these to match your Hugging Face repo after uploading
 HF_REPO_ID = os.environ.get("HF_REPO_ID", "seifelshaer/arkani-quran-asr")
-HF_FILENAME = os.environ.get("HF_FILENAME", "arkani_quran_model.nemo")
+HF_FILENAME = os.environ.get("HF_FILENAME", "arkani_quran_full.nemo")
 MODEL_CACHE = "/app/model_cache"
 
 # ─── Load Model (runs once at cold start) ─────────────────────
@@ -23,7 +29,6 @@ def load_model():
     
     local_path = os.path.join(MODEL_CACHE, HF_FILENAME)
     
-    # Download if not already cached
     if not os.path.exists(local_path):
         print(f"Downloading model from HuggingFace: {HF_REPO_ID}/{HF_FILENAME}")
         local_path = hf_hub_download(
@@ -44,7 +49,6 @@ def load_model():
     )
     model.eval()
     
-    # Use CTC decoder for faster inference
     if hasattr(model, 'cur_decoder'):
         model.cur_decoder = 'ctc'
     
@@ -58,22 +62,6 @@ MODEL = load_model()
 
 # ─── Handler Function ─────────────────────────────────────────
 def handler(event):
-    """
-    RunPod serverless handler.
-    
-    Input (JSON):
-        {
-            "input": {
-                "audio": "<base64-encoded-wav-audio>",
-                "language": "ar"  (optional, default: Arabic)
-            }
-        }
-    
-    Output (JSON):
-        {
-            "text": "بسم الله الرحمن الرحيم"
-        }
-    """
     try:
         input_data = event.get("input", {})
         audio_base64 = input_data.get("audio")
@@ -81,7 +69,6 @@ def handler(event):
         if not audio_base64:
             return {"error": "No audio provided. Send base64-encoded WAV in 'audio' field."}
         
-        # Decode base64 audio to temporary WAV file
         audio_bytes = base64.b64decode(audio_base64)
         
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -89,10 +76,8 @@ def handler(event):
             temp_path = f.name
         
         try:
-            # Transcribe using NeMo
             transcriptions = MODEL.transcribe([temp_path])
             
-            # Extract text from result
             if isinstance(transcriptions, list) and len(transcriptions) > 0:
                 if isinstance(transcriptions[0], str):
                     text = transcriptions[0]
@@ -109,7 +94,6 @@ def handler(event):
             }
             
         finally:
-            # Clean up temp file
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
                 
@@ -118,7 +102,6 @@ def handler(event):
             "error": str(e),
             "status": "failed"
         }
-
 
 # ─── Start RunPod Serverless ──────────────────────────────────
 runpod.serverless.start({"handler": handler})
