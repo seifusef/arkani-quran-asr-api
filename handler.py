@@ -2,12 +2,21 @@
 RunPod Serverless Handler for Arkani Quran ASR (NeMo FastConformer)
 Loads the fine-tuned NeMo model and transcribes audio sent as base64.
 """
-# Fix torchaudio compatibility (not needed for inference)
+# ─── Fix torchaudio compatibility (not needed for ASR inference) ───
 import sys, types
-_ta = types.ModuleType('torchaudio')
+
+class _MockModule(types.ModuleType):
+    """Auto-creates sub-modules on access to prevent ImportErrors."""
+    def __getattr__(self, name):
+        mod = _MockModule(f'{self.__name__}.{name}')
+        sys.modules[mod.__name__] = mod
+        return mod
+
+# Pre-register torchaudio mock before any NeMo import
+_ta = _MockModule('torchaudio')
 _ta.__version__ = '0.0.0'
 sys.modules['torchaudio'] = _ta
-sys.modules['torchaudio._extension'] = types.ModuleType('torchaudio._extension')
+# ─── End Fix ──────────────────────────────────────────────────────
 
 import runpod
 import base64
@@ -16,6 +25,7 @@ import os
 import torch
 import nemo.collections.asr as nemo_asr
 from huggingface_hub import hf_hub_download
+
 
 # ─── Configuration ────────────────────────────────────────────
 HF_REPO_ID = os.environ.get("HF_REPO_ID", "seifelshaer/arkani-quran-asr")
