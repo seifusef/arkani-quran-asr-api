@@ -1,20 +1,17 @@
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+# نستخدم NVIDIA NGC NeMo image (يحتوي على كل الـ dependencies الصحيحة)
+FROM nvcr.io/nvidia/nemo:24.05
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    ffmpeg sox libsndfile1 \
-    && rm -rf /var/lib/apt/lists/*
+# تثبيت RunPod SDK فقط (الباقي موجود في الـ image)
+RUN pip install --no-cache-dir runpod
 
-RUN pip install --no-cache-dir \
-    runpod \
-    huggingface_hub \
-    "nemo_toolkit[asr]==1.23.0" \
-    soundfile
-
+# نسخ الـ handler
 COPY handler.py .
 
+# Environment variables
 ENV HF_REPO_ID="seifelshaer/arkani-quran-asr"
 ENV HF_FILENAME="arkani_quran_full.nemo"
+ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "-u", "handler.py"]
