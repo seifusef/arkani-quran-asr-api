@@ -1,104 +1,93 @@
-"""
-RunPod Serverless Handler for Arkani Quran ASR (NeMo FastConformer)
-"""
-import runpod
+import os
 import base64
 import tempfile
-import os
-import sys
-from unittest.mock import MagicMock
-
-# ─── THE MAGIC MOCK ────────────────────────────────────────────
-# الحتة السحرية اللي بتعمل عزل كامل لـ torchaudio المكسور عشان السيرفر ما يقعش
-ta_mock = MagicMock()
-ta_mock.__version__ = '2.2.0'
-ta_mock.backend = MagicMock()
-ta_mock.is_available = MagicMock(return_value=False)
-ta_mock.list_audio_backends = MagicMock(return_value=[])
-
-sys.modules['torchaudio'] = ta_mock
-sys.modules['torchaudio._extension'] = MagicMock()
-sys.modules['torchvision'] = MagicMock()
-sys.modules['torchvision.io'] = MagicMock()
-# ──────────────────────────────────────────────────────────────
-
+import runpod
 import torch
 import nemo.collections.asr as nemo_asr
 from huggingface_hub import hf_hub_download
 
-HF_REPO_ID = os.environ.get("HF_REPO_ID", "seifelshaer/arkani-quran-asr")
-HF_FILENAME = os.environ.get("HF_FILENAME", "arkani_quran_full.nemo")
-MODEL_CACHE = "/app/model_cache"
+# ─── تحميل الموديل (مرة واحدة فقط) ───
+print("📥 جاري تحميل الموديل من HuggingFace...")
 
-def load_model():
-    os.makedirs(MODEL_CACHE, exist_ok=True)
-    local_path = os.path.join(MODEL_CACHE, HF_FILENAME)
-    
-    if not os.path.exists(local_path):
-        print(f"Downloading model from HuggingFace: {HF_REPO_ID}/{HF_FILENAME}")
-        local_path = hf_hub_download(
-            repo_id=HF_REPO_ID,
-            filename=HF_FILENAME,
-            cache_dir=MODEL_CACHE,
-            local_dir=MODEL_CACHE,
-        )
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading NeMo model on {device}...")
-    
-    model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.restore_from(
-        local_path, map_location=device
-    )
-    model.eval()
-    
-    if hasattr(model, 'cur_decoder'):
-        model.cur_decoder = 'ctc'
-    
-    print("Model loaded successfully!")
-    return model
+REPO_ID = os.environ.get("HF_REPO_ID", "seifelshaer/arkani-quran-asr")
+FILENAME = os.environ.get("HF_FILENAME", "arkani_quran_full.nemo")
 
-MODEL = load_model()
+model_path = hf_hub_download(
+    repo_id=REPO_ID,
+    filename=FILENAME,
+)
 
+print(f"✅ الموديل: {model_path}")
+
+# تحميل الموديل
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.restore_from(
+    model_path, 
+    map_location=device
+)
+model.eval()
+
+# استخدام CTC decoder (أدق للقرآن)
+if hasattr(model, 'cur_decoder'):
+    model.cur_decoder = 'ctc'
+
+print(f"✅ الموديل اتحمّل على: {device}")
+
+
+# ─── Handler Function ───
 def handler(event):
+    """
+    استقبال طلبات تحويل الصوت لنص.
+    
+    Input:
+    {
+        "input": {
+            "audio_base64": "...base64-encoded-wav..."
+        }
+    }
+    
+    Output:
+    {
+        "text": "النص المحوّل"
+    }
+    """
     try:
         input_data = event.get("input", {})
-        audio_base64 = input_data.get("audio")
+        audio_base64 = input_data.get("audio_base64")
         
         if not audio_base64:
-            return {"error": "No audio provided. Send base64-encoded WAV in 'audio' field."}
+            return {"error": "Missing 'audio_base64' in input"}
         
+        # فك التشفير
         audio_bytes = base64.b64decode(audio_base64)
         
+        # حفظ في ملف مؤقت
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             f.write(audio_bytes)
             temp_path = f.name
-            
-        try:
-            transcriptions = MODEL.transcribe([temp_path])
-            
-            if isinstance(transcriptions, list) and len(transcriptions) > 0:
-                if isinstance(transcriptions[0], str):
-                    text = transcriptions[0]
-                elif hasattr(transcriptions[0], 'text'):
-                    text = transcriptions[0].text
-                else:
-                    text = str(transcriptions[0])
-            else:
-                text = str(transcriptions)
-            
-            return {
-                "text": text.strip(),
-                "status": "success"
-            }
-        finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-                
-    except Exception as e:
-        import traceback
+        
+        # Transcribe
+        results = model.transcribe([temp_path], batch_size=1)
+        
+        # تنظيف
+        os.unlink(temp_path)
+        
+        # استخراج النص
+        result = results[0]
+        text = result.text if hasattr(result, 'text') else str(result)
+        
         return {
-            "error": "Handler Exception: " + str(e) + "\n" + traceback.format_exc(),
-            "status": "failed"
+            "text": text.strip(),
+            "status": "success"
+        }
+        
+    except Exception as e:
+        return {
+            "error": str(e),
+            "status": "error"
         }
 
+
+# ─── تشغيل RunPod ───
+print("🚀 RunPod handler جاهز!")
 runpod.serverless.start({"handler": handler})
