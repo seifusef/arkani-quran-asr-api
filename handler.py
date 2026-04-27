@@ -6,88 +6,133 @@ import torch
 import nemo.collections.asr as nemo_asr
 from huggingface_hub import hf_hub_download
 
-# ─── تحميل الموديل (مرة واحدة فقط) ───
+# ─── Model loading (UNCHANGED) ───
 print("📥 جاري تحميل الموديل من HuggingFace...")
 
 REPO_ID = os.environ.get("HF_REPO_ID", "seifelshaer/arkani-quran-asr")
 FILENAME = os.environ.get("HF_FILENAME", "arkani_quran_full.nemo")
 
-model_path = hf_hub_download(
-    repo_id=REPO_ID,
-    filename=FILENAME,
-)
-
-print(f"✅ الموديل: {model_path}")
-
-# تحميل الموديل
+model_path = hf_hub_download(repo_id=REPO_ID, filename=FILENAME)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.restore_from(
-    model_path, 
-    map_location=device
+    model_path, map_location=device
 )
 model.eval()
-
-# استخدام CTC decoder (أدق للقرآن)
 if hasattr(model, 'cur_decoder'):
     model.cur_decoder = 'ctc'
 
-print(f"✅ الموديل اتحمّل على: {device}")
+print(f"✅ Model loaded on: {device}")
 
 
-# ─── Handler Function ───
-def handler(event):
+def transcribe_audio_bytes(audio_bytes: bytes) -> dict:
     """
-    استقبال طلبات تحويل الصوت لنص.
-    
-    Input:
-    {
-        "input": {
-            "audio_base64": "...base64-encoded-wav..."
-        }
-    }
-    
-    Output:
-    {
-        "text": "النص المحوّل"
-    }
+    Transcribe audio bytes and return text + word list.
+    Used by both full and chunked modes.
     """
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        f.write(audio_bytes)
+        temp_path = f.name
+    
     try:
-        input_data = event.get("input", {})
-        audio_base64 = input_data.get("audio_base64")
-        
-        if not audio_base64:
-            return {"error": "Missing 'audio_base64' in input"}
-        
-        # فك التشفير
-        audio_bytes = base64.b64decode(audio_base64)
-        
-        # حفظ في ملف مؤقت
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            f.write(audio_bytes)
-            temp_path = f.name
-        
-        # Transcribe
         results = model.transcribe([temp_path], batch_size=1)
-        
-        # تنظيف
-        os.unlink(temp_path)
-        
-        # استخراج النص
         result = results[0]
         text = result.text if hasattr(result, 'text') else str(result)
+        text = text.strip()
+        
+        # Split into words for word-level highlighting
+        words = text.split() if text else []
         
         return {
-            "text": text.strip(),
+            "text": text,
+            "words": words,
+        }
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+def handle_full_mode(input_data: dict) -> dict:
+    """
+    Original full-audio inference (UNCHANGED behavior).
+    """
+    audio_base64 = input_data.get("audio_base64")
+    if not audio_base64:
+        return {"error": "Missing 'audio_base64' in input", "status": "error"}
+    
+    audio_bytes = base64.b64decode(audio_base64)
+    result = transcribe_audio_bytes(audio_bytes)
+    
+    return {
+        "text": result["text"],
+        "status": "success"
+    }
+
+
+def handle_chunked_mode(input_data: dict) -> dict:
+    """
+    NEW: Chunked inference for live word highlighting.
+    Receives a short audio chunk (~1.5s) and returns transcription
+    that the client can append to its running text.
+    """
+    audio_base64 = input_data.get("audio_base64")
+    session_id = input_data.get("session_id", "unknown")
+    chunk_index = input_data.get("chunk_index", 0)
+    previous_text = input_data.get("previous_text", "")
+    
+    if not audio_base64:
+        return {
+            "error": "Missing 'audio_base64' in chunked input",
+            "status": "error",
+            "session_id": session_id,
+            "chunk_index": chunk_index,
+        }
+    
+    try:
+        audio_bytes = base64.b64decode(audio_base64)
+        result = transcribe_audio_bytes(audio_bytes)
+        
+        chunk_text = result["text"]
+        full_text = (previous_text + " " + chunk_text).strip() if previous_text else chunk_text
+        
+        return {
+            "mode": "chunked",
+            "session_id": session_id,
+            "chunk_index": chunk_index,
+            "text": chunk_text,
+            "full_text": full_text,
+            "words": result["words"],
+            "duration_ms": 1500,
             "status": "success"
         }
-        
     except Exception as e:
         return {
+            "mode": "chunked",
+            "session_id": session_id,
+            "chunk_index": chunk_index,
             "error": str(e),
             "status": "error"
         }
 
 
-# ─── تشغيل RunPod ───
-print("🚀 RunPod handler جاهز!")
+def handler(event):
+    """
+    Main RunPod handler. Routes to full or chunked mode based on input.
+    """
+    try:
+        input_data = event.get("input", {})
+        mode = input_data.get("mode", "full")
+        
+        if mode == "chunked":
+            return handle_chunked_mode(input_data)
+        else:
+            return handle_full_mode(input_data)
+    
+    except Exception as e:
+        return {
+            "error": f"Handler exception: {str(e)}",
+            "status": "error"
+        }
+
+
+print("🚀 RunPod handler ready (full + chunked modes)")
 runpod.serverless.start({"handler": handler})
