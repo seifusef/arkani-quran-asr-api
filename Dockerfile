@@ -1,17 +1,16 @@
-# نستخدم NVIDIA NGC NeMo image (يحتوي على كل الـ dependencies الصحيحة)
 FROM nvcr.io/nvidia/nemo:24.05
 
 WORKDIR /app
 
-# تثبيت RunPod SDK فقط (الباقي موجود في الـ image)
+# تثبيت RunPod SDK
 RUN pip install --no-cache-dir runpod
 
-# نسخ الـ handler
+# نسخ الملفات
 COPY handler.py .
+COPY recitation_analyzer.py .
 
 # Environment variables
-ENV HF_REPO_ID="seifelshaer/arkani-quran-asr"
-ENV HF_FILENAME="arkani_quran_full.nemo"
+ENV MODEL_NAME="nvidia/stt_ar_fastconformer_hybrid_large_pcd_v1.0"
 ENV PYTHONUNBUFFERED=1
 
 CMD ["python", "-u", "handler.py"]
