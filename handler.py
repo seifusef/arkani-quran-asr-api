@@ -4,31 +4,36 @@ import tempfile
 import runpod
 import torch
 import nemo.collections.asr as nemo_asr
-from huggingface_hub import hf_hub_download
 from recitation_analyzer import RecitationAnalyzer
 
-# ─── Model loading (UNCHANGED) ───
-print("📥 جاري تحميل الموديل من HuggingFace...")
+# ─── تحميل الموديل من NVIDIA مباشرة ───
+print("📥 جاري تحميل موديل NVIDIA FastConformer Arabic Quran...")
 
-REPO_ID = os.environ.get("HF_REPO_ID", "seifelshaer/arkani-quran-asr")
-FILENAME = os.environ.get("HF_FILENAME", "arkani_quran_full.nemo")
-
-model_path = hf_hub_download(repo_id=REPO_ID, filename=FILENAME)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.restore_from(
-    model_path, map_location=device
+# الموديل بيتحمل من Hugging Face Hub تلقائياً
+MODEL_NAME = os.environ.get(
+    "MODEL_NAME", 
+    "nvidia/stt_ar_fastconformer_hybrid_large_pcd_v1.0"
 )
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.from_pretrained(
+    MODEL_NAME
+)
+model = model.to(device)
 model.eval()
+
 if hasattr(model, 'cur_decoder'):
     model.cur_decoder = 'ctc'
 
 print(f"✅ Model loaded on: {device}")
+print(f"📊 Model: {MODEL_NAME}")
 
 
 def transcribe_audio_bytes(audio_bytes: bytes) -> dict:
     """
     Transcribe audio bytes and return text + word list.
-    Used by both full and chunked modes.
+    الموديل الجديد بيرجع نص بتشكيل كامل.
     """
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
         f.write(audio_bytes)
@@ -40,12 +45,12 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> dict:
         text = result.text if hasattr(result, 'text') else str(result)
         text = text.strip()
         
-        # Split into words for word-level highlighting
         words = text.split() if text else []
         
         return {
             "text": text,
             "words": words,
+            "has_diacritics": True,  # الموديل الجديد دايماً بيدي تشكيل
         }
     finally:
         if os.path.exists(temp_path):
@@ -53,9 +58,7 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> dict:
 
 
 def handle_full_mode(input_data: dict) -> dict:
-    """
-    Original full-audio inference (UNCHANGED behavior).
-    """
+    """Full audio inference."""
     audio_base64 = input_data.get("audio_base64")
     if not audio_base64:
         return {"error": "Missing 'audio_base64' in input", "status": "error"}
@@ -65,16 +68,13 @@ def handle_full_mode(input_data: dict) -> dict:
     
     return {
         "text": result["text"],
+        "has_diacritics": result["has_diacritics"],
         "status": "success"
     }
 
 
 def handle_chunked_mode(input_data: dict) -> dict:
-    """
-    NEW: Chunked inference for live word highlighting.
-    Receives a short audio chunk (~1.5s) and returns transcription
-    that the client can append to its running text.
-    """
+    """Chunked inference for live word highlighting."""
     audio_base64 = input_data.get("audio_base64")
     session_id = input_data.get("session_id", "unknown")
     chunk_index = input_data.get("chunk_index", 0)
@@ -114,10 +114,9 @@ def handle_chunked_mode(input_data: dict) -> dict:
             "status": "error"
         }
 
+
 def handle_analyze_mode(input_data: dict) -> dict:
-    """
-    NEW: Analyze mode for word-level recitation comparison using Needleman-Wunsch.
-    """
+    """Analyze mode with Needleman-Wunsch alignment."""
     audio_base64 = input_data.get("audio_base64")
     expected_text = input_data.get("expected_text")
     surah_number = input_data.get("surah_number")
@@ -141,6 +140,7 @@ def handle_analyze_mode(input_data: dict) -> dict:
         
         return {
             "transcription": transcription,
+            "has_diacritics": result["has_diacritics"],
             "analysis": analysis,
             "status": "success"
         }
@@ -152,11 +152,8 @@ def handle_analyze_mode(input_data: dict) -> dict:
 
 
 def handler(event):
-    """
-    Main RunPod handler. Routes to full, chunked, or analyze mode based on input.
-    """
+    """Main RunPod handler."""
     try:
-        # Simple health check mode
         if event.get("httpMethod") == "GET" and event.get("path") == "/health":
             return {"status": "success", "message": "Model is loaded and ready."}
             
@@ -179,5 +176,5 @@ def handler(event):
         }
 
 
-print("🚀 RunPod handler ready (full, chunked, and analyze modes)")
+print("🚀 RunPod handler ready (NVIDIA Arabic Quran Model)")
 runpod.serverless.start({"handler": handler})
