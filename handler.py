@@ -5,6 +5,7 @@ import runpod
 import torch
 import nemo.collections.asr as nemo_asr
 from huggingface_hub import hf_hub_download
+from recitation_analyzer import RecitationAnalyzer
 
 # ─── Model loading (UNCHANGED) ───
 print("📥 جاري تحميل الموديل من HuggingFace...")
@@ -113,17 +114,61 @@ def handle_chunked_mode(input_data: dict) -> dict:
             "status": "error"
         }
 
+def handle_analyze_mode(input_data: dict) -> dict:
+    """
+    NEW: Analyze mode for word-level recitation comparison using Needleman-Wunsch.
+    """
+    audio_base64 = input_data.get("audio_base64")
+    expected_text = input_data.get("expected_text")
+    surah_number = input_data.get("surah_number")
+    ayah_number = input_data.get("ayah_number")
+
+    if not audio_base64:
+        return {"error": "Missing 'audio_base64' in input", "status": "error"}
+    
+    if expected_text is None:
+        return {"error": "Missing 'expected_text' in input", "status": "error"}
+    
+    try:
+        print(f"🔍 Analyzing Surah {surah_number}, Ayah {ayah_number}")
+        audio_bytes = base64.b64decode(audio_base64)
+        result = transcribe_audio_bytes(audio_bytes)
+        
+        transcription = result["text"]
+        
+        analyzer = RecitationAnalyzer()
+        analysis = analyzer.analyze(transcription, expected_text)
+        
+        return {
+            "transcription": transcription,
+            "analysis": analysis,
+            "status": "success"
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "status": "error"
+        }
+
 
 def handler(event):
     """
-    Main RunPod handler. Routes to full or chunked mode based on input.
+    Main RunPod handler. Routes to full, chunked, or analyze mode based on input.
     """
     try:
+        # Simple health check mode
+        if event.get("httpMethod") == "GET" and event.get("path") == "/health":
+            return {"status": "success", "message": "Model is loaded and ready."}
+            
         input_data = event.get("input", {})
         mode = input_data.get("mode", "full")
         
         if mode == "chunked":
             return handle_chunked_mode(input_data)
+        elif mode == "analyze":
+            return handle_analyze_mode(input_data)
+        elif mode == "health":
+            return {"status": "success", "message": "Model is loaded and ready."}
         else:
             return handle_full_mode(input_data)
     
@@ -134,5 +179,5 @@ def handler(event):
         }
 
 
-print("🚀 RunPod handler ready (full + chunked modes)")
+print("🚀 RunPod handler ready (full, chunked, and analyze modes)")
 runpod.serverless.start({"handler": handler})
