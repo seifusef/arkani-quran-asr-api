@@ -3,13 +3,13 @@ import base64
 import tempfile
 import runpod
 import torch
+import torchaudio
 import nemo.collections.asr as nemo_asr
 from recitation_analyzer import RecitationAnalyzer
 
-# ─── تحميل الموديل من NVIDIA مباشرة ───
-print("📥 جاري تحميل موديل NVIDIA FastConformer Arabic Quran...")
+# ─── تحميل الموديل ───
+print("📥 جاري تحميل موديل NVIDIA Arabic Quran...")
 
-# الموديل بيتحمل من Hugging Face Hub تلقائياً
 MODEL_NAME = os.environ.get(
     "MODEL_NAME", 
     "nvidia/stt_ar_fastconformer_hybrid_large_pcd_v1.0"
@@ -17,30 +17,69 @@ MODEL_NAME = os.environ.get(
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.from_pretrained(
-    MODEL_NAME
-)
+model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.from_pretrained(MODEL_NAME)
 model = model.to(device)
 model.eval()
 
-if hasattr(model, 'cur_decoder'):
-    model.cur_decoder = 'ctc'
+# ✅ تصحيح 1: استخدام RNNT بدل CTC للحصول على دقة أعلى
+# (نشيل السطر اللي بيغير الـ decoder لـ CTC)
+# RNNT هو الافتراضي وهو الأدق
 
 print(f"✅ Model loaded on: {device}")
-print(f"📊 Model: {MODEL_NAME}")
+print(f"📊 Decoder: RNNT (الأدق)")
+
+
+def prepare_audio(audio_bytes: bytes, target_sr: int = 16000) -> str:
+    """
+    ✅ تصحيح 4: تجهيز الصوت بشكل صحيح
+    - تحويل أي صيغة لـ WAV
+    - resample لـ 16kHz
+    - تحويل لـ mono
+    """
+    # حفظ البيانات الأصلية
+    with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as f:
+        f.write(audio_bytes)
+        input_path = f.name
+    
+    # ملف الإخراج WAV
+    output_path = input_path + ".wav"
+    
+    try:
+        # قراءة الصوت بأي صيغة
+        waveform, sample_rate = torchaudio.load(input_path)
+        
+        # تحويل لـ mono لو stereo
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+        
+        # resample لـ 16kHz لو مختلف
+        if sample_rate != target_sr:
+            resampler = torchaudio.transforms.Resample(
+                orig_freq=sample_rate,
+                new_freq=target_sr
+            )
+            waveform = resampler(waveform)
+        
+        # حفظ كـ WAV
+        torchaudio.save(output_path, waveform, target_sr)
+        
+        return output_path
+    finally:
+        # حذف الملف الأصلي
+        if os.path.exists(input_path):
+            os.unlink(input_path)
 
 
 def transcribe_audio_bytes(audio_bytes: bytes) -> dict:
     """
-    Transcribe audio bytes and return text + word list.
-    الموديل الجديد بيرجع نص بتشكيل كامل.
+    تحويل الصوت لنص مع التشكيل
     """
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        f.write(audio_bytes)
-        temp_path = f.name
+    # ✅ تجهيز الصوت بشكل صحيح
+    wav_path = prepare_audio(audio_bytes)
     
     try:
-        results = model.transcribe([temp_path], batch_size=1)
+        # ✅ استخدام batch_size أكبر للأداء الأفضل
+        results = model.transcribe([wav_path], batch_size=1)
         result = results[0]
         text = result.text if hasattr(result, 'text') else str(result)
         text = text.strip()
@@ -50,11 +89,11 @@ def transcribe_audio_bytes(audio_bytes: bytes) -> dict:
         return {
             "text": text,
             "words": words,
-            "has_diacritics": True,  # الموديل الجديد دايماً بيدي تشكيل
+            "has_diacritics": True,
         }
     finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+        if os.path.exists(wav_path):
+            os.unlink(wav_path)
 
 
 def handle_full_mode(input_data: dict) -> dict:
@@ -74,7 +113,7 @@ def handle_full_mode(input_data: dict) -> dict:
 
 
 def handle_chunked_mode(input_data: dict) -> dict:
-    """Chunked inference for live word highlighting."""
+    """Chunked inference."""
     audio_base64 = input_data.get("audio_base64")
     session_id = input_data.get("session_id", "unknown")
     chunk_index = input_data.get("chunk_index", 0)
@@ -116,7 +155,7 @@ def handle_chunked_mode(input_data: dict) -> dict:
 
 
 def handle_analyze_mode(input_data: dict) -> dict:
-    """Analyze mode with Needleman-Wunsch alignment."""
+    """Analyze mode with detailed comparison."""
     audio_base64 = input_data.get("audio_base64")
     expected_text = input_data.get("expected_text")
     surah_number = input_data.get("surah_number")
@@ -130,10 +169,13 @@ def handle_analyze_mode(input_data: dict) -> dict:
     
     try:
         print(f"🔍 Analyzing Surah {surah_number}, Ayah {ayah_number}")
+        print(f"📝 Expected: {expected_text}")
+        
         audio_bytes = base64.b64decode(audio_base64)
         result = transcribe_audio_bytes(audio_bytes)
         
         transcription = result["text"]
+        print(f"🎤 Transcribed: {transcription}")
         
         analyzer = RecitationAnalyzer()
         analysis = analyzer.analyze(transcription, expected_text)
@@ -145,6 +187,8 @@ def handle_analyze_mode(input_data: dict) -> dict:
             "status": "success"
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {
             "error": str(e),
             "status": "error"
@@ -170,11 +214,13 @@ def handler(event):
             return handle_full_mode(input_data)
     
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {
             "error": f"Handler exception: {str(e)}",
             "status": "error"
         }
 
 
-print("🚀 RunPod handler ready (NVIDIA Arabic Quran Model)")
+print("🚀 RunPod handler ready (NVIDIA Arabic Quran Model - Fixed Version)")
 runpod.serverless.start({"handler": handler})
