@@ -2,8 +2,9 @@ FROM nvcr.io/nvidia/nemo:24.05
 
 WORKDIR /app
 
-# Install dependencies
-RUN pip install --no-cache-dir runpod torchaudio soundfile
+# torchaudio موجود في NeMo image - لو ضفنا torchaudio هنكسر CUDA
+# soundfile موجود برضه. بنضيف runpod بس
+RUN pip install --no-cache-dir runpod
 
 COPY handler.py .
 COPY recitation_analyzer.py .
