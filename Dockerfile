@@ -2,7 +2,8 @@ FROM nvcr.io/nvidia/nemo:24.05
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir runpod torchaudio
+# Install dependencies
+RUN pip install --no-cache-dir runpod torchaudio soundfile
 
 COPY handler.py .
 COPY recitation_analyzer.py .
