@@ -1,3 +1,2 @@
 runpod
-torchaudio
 huggingface_hub
