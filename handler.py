@@ -3,7 +3,8 @@ import base64
 import tempfile
 import runpod
 import torch
-import torchaudio
+import librosa
+import soundfile as sf
 import nemo.collections.asr as nemo_asr
 from recitation_analyzer import RecitationAnalyzer
 
@@ -21,64 +22,40 @@ model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.from_pretrained(MODEL_NAME)
 model = model.to(device)
 model.eval()
 
-# ✅ تصحيح 1: استخدام RNNT بدل CTC للحصول على دقة أعلى
-# (نشيل السطر اللي بيغير الـ decoder لـ CTC)
-# RNNT هو الافتراضي وهو الأدق
-
 print(f"✅ Model loaded on: {device}")
 print(f"📊 Decoder: RNNT (الأدق)")
 
 
 def prepare_audio(audio_bytes: bytes, target_sr: int = 16000) -> str:
     """
-    ✅ تصحيح 4: تجهيز الصوت بشكل صحيح
-    - تحويل أي صيغة لـ WAV
-    - resample لـ 16kHz
-    - تحويل لـ mono
+    تجهيز الصوت: تحويل لـ WAV + 16kHz + mono باستخدام librosa
     """
-    # حفظ البيانات الأصلية
     with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as f:
         f.write(audio_bytes)
         input_path = f.name
     
-    # ملف الإخراج WAV
     output_path = input_path + ".wav"
     
     try:
-        # قراءة الصوت بأي صيغة
-        waveform, sample_rate = torchaudio.load(input_path)
+        # librosa بيقرأ أي صيغة (WAV, MP3, M4A, WebM, etc.)
+        # mono=True بيحول لـ mono تلقائي
+        # sr=target_sr بيعمل resample لـ 16kHz
+        waveform, _ = librosa.load(input_path, sr=target_sr, mono=True)
         
-        # تحويل لـ mono لو stereo
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
-        
-        # resample لـ 16kHz لو مختلف
-        if sample_rate != target_sr:
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=sample_rate,
-                new_freq=target_sr
-            )
-            waveform = resampler(waveform)
-        
-        # حفظ كـ WAV
-        torchaudio.save(output_path, waveform, target_sr)
+        # حفظ كـ WAV باستخدام soundfile (موجود في NeMo image)
+        sf.write(output_path, waveform, target_sr, subtype='PCM_16')
         
         return output_path
     finally:
-        # حذف الملف الأصلي
         if os.path.exists(input_path):
             os.unlink(input_path)
 
 
 def transcribe_audio_bytes(audio_bytes: bytes) -> dict:
-    """
-    تحويل الصوت لنص مع التشكيل
-    """
-    # ✅ تجهيز الصوت بشكل صحيح
+    """تحويل الصوت لنص مع التشكيل"""
     wav_path = prepare_audio(audio_bytes)
     
     try:
-        # ✅ استخدام batch_size أكبر للأداء الأفضل
         results = model.transcribe([wav_path], batch_size=1)
         result = results[0]
         text = result.text if hasattr(result, 'text') else str(result)
