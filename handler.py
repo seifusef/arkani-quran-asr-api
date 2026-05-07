@@ -24,6 +24,21 @@ model = nemo_asr.models.EncDecHybridRNNTCTCBPEModel.from_pretrained(MODEL_NAME)
 model = model.to(device)
 model.eval()
 
+# ═══════════════════════════════════════════════════════════
+# CRITICAL: Force RNNT decoder for diacritics output
+# ═══════════════════════════════════════════════════════════
+# This Hybrid model has two decoders:
+#   - CTC: faster, returns text WITHOUT diacritics
+#   - RNNT: slower, returns text WITH FULL diacritics (tashkeel)
+# By default, NeMo may use CTC for short audio chunks.
+# We MUST force RNNT to get tashkeel reliably.
+try:
+    model.change_decoding_strategy(decoder_type="rnnt")
+    print("✅ Decoder strategy set to: RNNT (with diacritics)")
+except Exception as e:
+    print(f"⚠️ Failed to set RNNT decoder: {e}")
+    print("⚠️ Diacritics output may be inconsistent!")
+
 print(f"✅ Model loaded on: {device}")
 
 # Cache للسرعة
@@ -45,10 +60,10 @@ def _clean_text(text):
 def _transcribe_audio_fast(audio_bytes: bytes, target_sr: int = 16000) -> str:
     """
     تحويل سريع للصوت لنص — كل العمليات في الذاكرة.
+    Forces RNNT decoder via change_decoding_strategy at module load.
     """
     # حاول نقرأ من الذاكرة مباشرة (أسرع من ملف)
     try:
-        # soundfile ممكن يقرأ WAV/FLAC في الذاكرة
         audio_io = io.BytesIO(audio_bytes)
         waveform, sr = sf.read(audio_io, dtype='float32')
         
@@ -86,7 +101,13 @@ def _transcribe_audio_fast(audio_bytes: bytes, target_sr: int = 16000) -> str:
         sf.write(wav_path, waveform, target_sr, subtype='PCM_16')
         results = model.transcribe([wav_path], batch_size=1)
         text = results[0] if results else ""
-        return _clean_text(text)
+        cleaned = _clean_text(text)
+        
+        # Debug: log if tashkeel is missing
+        if cleaned and not any('\u064B' <= c <= '\u0652' for c in cleaned):
+            print(f"⚠️ WARNING: Transcription has no tashkeel: {cleaned[:50]}")
+        
+        return cleaned
     finally:
         if os.path.exists(wav_path):
             os.unlink(wav_path)
@@ -102,9 +123,14 @@ def handle_full_mode(input_data: dict) -> dict:
         audio_bytes = base64.b64decode(audio_base64)
         text = _transcribe_audio_fast(audio_bytes)
         
+        # Verify tashkeel actually present
+        has_tashkeel = bool(text) and any(
+            '\u064B' <= c <= '\u0652' for c in text
+        )
+        
         return {
             "text": text,
-            "has_diacritics": True,
+            "has_diacritics": has_tashkeel,
             "status": "success"
         }
     except Exception as e:
@@ -119,6 +145,7 @@ def handle_full_mode(input_data: dict) -> dict:
 def handle_chunked_mode(input_data: dict) -> dict:
     """
     Chunked inference - محسّن للسرعة.
+    Now uses RNNT decoder for tashkeel output.
     """
     audio_base64 = input_data.get("audio_base64", "")
     session_id = input_data.get("session_id", "unknown")
@@ -137,8 +164,6 @@ def handle_chunked_mode(input_data: dict) -> dict:
         audio_bytes = base64.b64decode(audio_base64)
         
         # Skip لو الـ chunk صغير جداً (أقل من 0.5 ثانية)
-        # WAV mono 16kHz 16-bit = 32000 bytes/sec
-        # 0.5 sec = 16000 bytes (+ 44 byte header)
         if len(audio_bytes) < 16044:
             return {
                 "mode": "chunked",
@@ -149,7 +174,7 @@ def handle_chunked_mode(input_data: dict) -> dict:
                 "status": "success"
             }
         
-        # Transcribe
+        # Transcribe (RNNT decoder = with tashkeel)
         text = _transcribe_audio_fast(audio_bytes)
         
         # Cache آخر transcription لده الـ session
@@ -160,7 +185,7 @@ def handle_chunked_mode(input_data: dict) -> dict:
             "session_id": session_id,
             "chunk_index": chunk_index,
             "text": text,
-            "full_text": text,  # في chunked mode بنبعت كل buffer كل مرة
+            "full_text": text,
             "status": "success"
         }
         
@@ -190,7 +215,6 @@ def handle_analyze_mode(input_data: dict) -> dict:
         audio_bytes = base64.b64decode(audio_base64)
         transcription = _transcribe_audio_fast(audio_bytes)
         
-        # لو مفيش expected_text، رجّع الـ transcription بس
         if expected_text is None:
             return {
                 "transcription": transcription,
@@ -198,7 +222,6 @@ def handle_analyze_mode(input_data: dict) -> dict:
                 "status": "success"
             }
         
-        # Analyze
         analyzer = RecitationAnalyzer()
         analysis = analyzer.analyze(transcription, expected_text)
         
@@ -223,9 +246,8 @@ def handler(event):
         input_data = event.get("input", {})
         mode = input_data.get("mode", "full")
         
-        # Check task field (Web sometimes sends "task" instead of "mode")
         if "task" in input_data and mode == "full":
-            mode = "full"  # web full mode
+            mode = "full"
         
         if mode == "chunked":
             return handle_chunked_mode(input_data)
@@ -245,5 +267,5 @@ def handler(event):
         }
 
 
-print("🚀 RunPod handler ready (Fast Mode)")
+print("🚀 RunPod handler ready (Fast Mode + RNNT Decoder for Tashkeel)")
 runpod.serverless.start({"handler": handler})
